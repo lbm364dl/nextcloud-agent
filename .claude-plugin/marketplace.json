@@ -1,0 +1,12 @@
+{
+  "name": "nextcloud-agent",
+  "description": "Nextcloud access for Claude Code agents, with guard rails",
+  "owner": { "name": "Catalin Covaci", "url": "https://github.com/lbm364dl" },
+  "plugins": [
+    {
+      "name": "nextcloud",
+      "source": "./plugins/nextcloud",
+      "description": "Browse, search, download, upload and share on any Nextcloud; no local sync copy needed"
+    }
+  ]
+}
