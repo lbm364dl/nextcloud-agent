@@ -1,7 +1,7 @@
 {
   "name": "nextcloud",
   "displayName": "Nextcloud for agents",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Use any Nextcloud from Claude Code: browse, search, download, upload into allowed folders, and share with explicit human approval. Works without a local sync copy.",
   "author": { "name": "Catalin Covaci", "url": "https://github.com/lbm364dl" },
   "repository": "https://github.com/lbm364dl/nextcloud-agent",
