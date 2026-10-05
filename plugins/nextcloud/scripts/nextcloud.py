@@ -15,7 +15,8 @@ private file (mode 600). Passwords are never passed on the command line.
   nextcloud.py find PATTERN [--in PATH]    search file names in the index
   nextcloud.py get PATH [--to DIR]         identical local synced copy, else download
   nextcloud.py where PATH                  is there an identical local copy?
-  nextcloud.py put LOCAL PATH              upload; only into allowed folders
+  nextcloud.py put LOCAL PATH [--overwrite]  upload; only into allowed folders;
+                                           refuses an existing file unless --overwrite
   nextcloud.py mkdir PATH                  create a folder; only in allowed folders
   nextcloud.py shares [--mine]             shared with me (or by me)
   nextcloud.py who NAME                    find users/groups to share with
@@ -25,7 +26,7 @@ private file (mode 600). Passwords are never passed on the command line.
   nextcloud.py unshare SHARE_ID            remove a share (no approval needed)
   nextcloud.py ext-ls  --cred FILE [PATH]  browse a share someone SENT you (no account)
   nextcloud.py ext-get --cred FILE PATH    download from it
-  nextcloud.py ext-put --cred FILE LOCAL [PATH]  upload into it, if allowed
+  nextcloud.py ext-put --cred FILE LOCAL [PATH] [--overwrite]  upload into it, if allowed
 
 Global: --profile NAME (or env NEXTCLOUD_PROFILE); default from the config.
 Levels: read | drop (upload only) | contribute (no delete) | edit.
@@ -42,6 +43,7 @@ import argparse
 import base64
 import datetime as dt
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -108,6 +110,9 @@ def prof():
     return p
 
 
+VERIFY_MAX = 100 * 1024 * 1024  # read uploads back up to this size to compare content
+
+
 def remote():
     return f"nc-{profile_name()}"
 
@@ -143,6 +148,38 @@ def rclone(*args):
     if res.returncode != 0:
         die(f"rclone {args[0]} failed: {(res.stderr or '').strip()[-600:]}")
     return res.stdout
+
+
+def remote_stat(path):
+    """The server's lsjson entry for PATH, or None when nothing is there."""
+    try:
+        res = subprocess.run(["rclone", "lsjson", "--stat", "--no-mimetype", f"{remote()}:{path}"],
+                             capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    except FileNotFoundError:
+        die("rclone is not installed (https://rclone.org/install/); put it on PATH")
+    if res.returncode != 0:
+        if "not found" in (res.stderr or "").lower():
+            return None
+        die(f"rclone lsjson failed: {(res.stderr or '').strip()[-600:]}")
+    return json.loads(res.stdout)
+
+
+def remote_md5(path, size):
+    """MD5 of the server copy of PATH. Uses the server's own hash when it reports one;
+    otherwise reads the file back if it is at most VERIFY_MAX bytes. None if neither works."""
+    try:
+        res = subprocess.run(["rclone", "hashsum", "md5", f"{remote()}:{path}"],
+                             capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        out = res.stdout.split() if res.returncode == 0 else []
+        if out and len(out[0]) == 32:
+            return out[0]
+        if size > VERIFY_MAX:
+            return None
+        res = subprocess.run(["rclone", "cat", f"{remote()}:{path}"],
+                             capture_output=True, stdin=subprocess.DEVNULL)
+    except FileNotFoundError:
+        die("rclone is not installed (https://rclone.org/install/); put it on PATH")
+    return hashlib.md5(res.stdout).hexdigest() if res.returncode == 0 else None
 
 
 def clean(path):
@@ -348,15 +385,30 @@ def cmd_get(a):
 def cmd_put(a):
     p = require_writable(a.path)
     src = Path(a.local)
-    if not src.exists():
-        die(f"{src} does not exist")
+    if not src.is_file():
+        die(f"{src} does not exist or is not a file")
     target = p + src.name if p.endswith("/") else p
-    args = ["copyto", str(src), f"{remote()}:{target}"]
-    if not a.overwrite:
-        args.append("--ignore-existing")
-    rclone(*args)
-    log("put", f"{src} -> {target}")
-    print(f"uploaded to {target} (private unless that folder is shared)")
+    before = remote_stat(target)
+    if before is not None and before.get("IsDir"):
+        die(f"'{target}' is a folder on the server; give a file path or end the folder path with '/'")
+    if before is not None and not a.overwrite:
+        die(f"'{target}' already exists on the server, so nothing was uploaded. To replace it, "
+            "rerun with --overwrite (Nextcloud keeps the old file in its version history).")
+    # --ignore-times: always transfer, never skip on matching size and time.
+    rclone("copyto", "--ignore-times", str(src), f"{remote()}:{target}")
+    size = src.stat().st_size
+    after = remote_stat(target)
+    if after is None or after.get("Size") != size:
+        got = "nothing" if after is None else f"{after.get('Size')} bytes"
+        die(f"upload of '{target}' could not be verified: the server has {got}, "
+            f"the local file has {size} bytes")
+    server_md5 = remote_md5(target, size)
+    if server_md5 is not None and server_md5 != hashlib.md5(src.read_bytes()).hexdigest():
+        die(f"upload of '{target}' could not be verified: the server's copy differs from the local file")
+    checked = "size and content" if server_md5 is not None else "size only (file too large to read back)"
+    verb = "replaced" if before is not None else "uploaded"
+    log("put", f"{src} -> {target} ({verb}, {size} bytes)")
+    print(f"{verb} {target} ({size} bytes; server copy checked: {checked}; private unless that folder is shared)")
 
 
 def cmd_mkdir(a):
@@ -497,17 +549,27 @@ def cmd_ext_get(a):
 def cmd_ext_put(a):
     base, h = _ext(a.cred)
     src = Path(a.local)
-    if not src.exists():
-        die(f"{src} does not exist")
+    if not src.is_file():
+        die(f"{src} does not exist or is not a file")
     target = clean(a.path)
     target = target + src.name if (not target or target.endswith("/")) else target
+    url = base + urllib.parse.quote(target)
+    exists = True
     try:
-        urllib.request.urlopen(urllib.request.Request(base + urllib.parse.quote(target),
-                                                      data=src.read_bytes(), method="PUT", headers=h),
+        urllib.request.urlopen(urllib.request.Request(url, method="HEAD", headers=h), timeout=60)
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            _ext_err(e)
+        exists = False
+    if exists and not a.overwrite:
+        die(f"'{target}' already exists in the share, so nothing was uploaded. "
+            "To replace it, rerun with --overwrite.")
+    try:
+        urllib.request.urlopen(urllib.request.Request(url, data=src.read_bytes(), method="PUT", headers=h),
                                timeout=600)
     except urllib.error.HTTPError as e:
         _ext_err(e)
-    print(f"uploaded {src.name} to the share as {target}")
+    print(f"{'replaced' if exists else 'uploaded'} {src.name} in the share as {target}")
 
 
 # -- CLI ----------------------------------------------------------------------------
@@ -558,6 +620,7 @@ def main():
     x = add("ext-get", cmd_ext_get); x.add_argument("--cred", required=True); x.add_argument("path")
     x.add_argument("--to")
     x = add("ext-put", cmd_ext_put); x.add_argument("--cred", required=True); x.add_argument("local")
+    x.add_argument("--overwrite", action="store_true")
     x.add_argument("path", nargs="?", default="")
 
     a = p.parse_args()

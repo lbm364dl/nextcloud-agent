@@ -83,6 +83,47 @@ check("share link -> public DAV base", base == "https://cloud.example.org/public
 check("X-Requested-With header set", h.get("X-Requested-With") == "XMLHttpRequest")
 check("anonymous basic auth set", h.get("Authorization", "").startswith("Basic "))
 
+# put: never report an upload that did not happen
+class P:
+    overwrite = False
+    def __init__(self, local, path): self.local, self.path = local, path
+src = Path(home) / "out.csv"
+src.write_text("a,b\n1,2\n")
+calls = []
+state = {}
+def fake_stat(path): return state.get(path)
+def fake_rclone(*args):
+    calls.append(args)
+    if args[0] == "copyto":
+        state[args[-1].split(":", 1)[1]] = {"Size": state.get("_upload_size", src.stat().st_size)}
+    if args[0] == "hashsum":
+        return ""
+    return ""
+nc.remote_stat, nc.rclone = fake_stat, fake_rclone
+nc.remote_md5 = lambda path, size: None
+
+check("put of a new file uploads", dies(nc.cmd_put, P(str(src), "agents/run/")) is None
+      and any(c[0] == "copyto" for c in calls))
+calls.clear()
+msg = dies(nc.cmd_put, P(str(src), "agents/run/"))
+check("put onto an existing file without --overwrite is refused", msg is not None and "--overwrite" in msg)
+check("...and nothing is copied", not any(c[0] == "copyto" for c in calls))
+o = P(str(src), "agents/run/"); o.overwrite = True
+check("put --overwrite replaces it", dies(nc.cmd_put, o) is None and any(c[0] == "copyto" for c in calls))
+check("copyto always transfers (--ignore-times)", all("--ignore-times" in c for c in calls if c[0] == "copyto"))
+state["_upload_size"] = 1
+msg = dies(nc.cmd_put, o)
+check("put fails when the server size does not match", msg is not None and "could not be verified" in msg)
+state.pop("_upload_size")
+nc.remote_md5 = lambda path, size: "0" * 32
+msg = dies(nc.cmd_put, o)
+check("put fails when the server content does not match", msg is not None and "differs" in msg)
+nc.remote_md5 = lambda path, size: None
+state["_upload_size"] = src.stat().st_size
+state.pop("_upload_size")
+state["agents/dir"] = {"IsDir": True}
+check("put onto a folder path without '/' is refused", dies(nc.cmd_put, P(str(src), "agents/dir")) is not None)
+
 # no desktop client -> network only
 check("no local sync client -> no local roots", nc.local_roots() == [])
 

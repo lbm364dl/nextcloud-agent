@@ -35,6 +35,7 @@ $NC ls some/folder/
 $NC find "*report*2025*" --in projects   # search names (run `index` when stale)
 $NC get projects/x/data.csv       # identical local synced copy if any, else download; prints the path
 $NC put out.csv agents/run-42/    # upload, only into allowed folders
+$NC put out.csv agents/run-42/ --overwrite   # replace a file that is already there
 $NC shares                        # shared with me   (--mine: shared by me)
 $NC who "Garcia"                  # find a user's login or a group to share with
 ```
@@ -45,6 +46,12 @@ $NC who "Garcia"                  # find a user's login or a group to share with
   --remote` forces a download, and `NEXTCLOUD_NO_LOCAL=1` disables local use.
   Writes always go over the network: immediate, logged, and no sync-conflict
   copies.
+- **Replacing a file:** `put` refuses a file that already exists and says so;
+  pass `--overwrite` to replace it (Nextcloud keeps the old one in its version
+  history). Every `put` checks the server copy afterwards (size, and content:
+  the server's MD5, or the file read back when it is at most 100 MB) and fails if it does not match, so "uploaded" or
+  "replaced" in the output means the bytes are on the server. `ext-put` refuses
+  an existing file the same way.
 - Download only what the task needs; files land in
   `~/.cache/nextcloud-agent/<profile>/files/`.
 
