@@ -124,6 +124,39 @@ state.pop("_upload_size")
 state["agents/dir"] = {"IsDir": True}
 check("put onto a folder path without '/' is refused", dies(nc.cmd_put, P(str(src), "agents/dir")) is not None)
 
+# move / copy / delete: inside the folders the human allowed, and verified on the server
+class M:
+    folder = False; overwrite = False
+    def __init__(self, src=None, dst=None, path=None): self.src, self.dst, self.path = src, dst, path
+calls.clear(); state.clear()
+state["agents/old"] = {"IsDir": True}
+def fake_rclone2(*args):
+    calls.append(args)
+    if args[0] == "moveto":
+        s, d = (x.split(":", 1)[1] for x in args[1:3]); state[d] = state.pop(s)
+    if args[0] in ("deletefile", "purge"):
+        state.pop(args[1].split(":", 1)[1], None)
+    return ""
+nc.rclone = fake_rclone2
+check("mv inside allowed folders renames", dies(nc.cmd_mv, M("agents/old", "agents/new")) is None and "agents/new" in state)
+check("...as one server-side move", any(c[0] == "moveto" for c in calls) and not any(c[0] in ("copy", "copyto") for c in calls))
+state["Documents/x"] = {"Size": 1}
+check("mv from a folder not allowed is refused", dies(nc.cmd_mv, M("Documents/x", "agents/x")) is not None)
+check("mv into a folder not allowed is refused", dies(nc.cmd_mv, M("agents/new", "Documents/y")) is not None)
+state["agents/taken"] = {"Size": 1}
+check("mv onto an existing name is refused", dies(nc.cmd_mv, M("agents/new", "agents/taken")) is not None)
+check("mv of a folder into itself is refused", dies(nc.cmd_mv, M("agents/new", "agents/new/sub")) is not None)
+check("rm of a folder needs --folder", dies(nc.cmd_rm, M(path="agents/new")) is not None)
+f = M(path="agents/new"); f.folder = True
+check("rm --folder deletes it", dies(nc.cmd_rm, f) is None and "agents/new" not in state)
+check("rm outside allowed folders is refused", dies(nc.cmd_rm, M(path="Documents/x")) is not None)
+check("rm of the account root is refused", dies(nc.cmd_rm, M(path="")) is not None)
+c = nc.load_conf(); c["profiles"]["t"]["delete_allowed"] = []; nc.save_conf(c)
+check("an empty delete_allowed turns rm off", dies(nc.cmd_rm, M(path="agents/taken")) is not None)
+c["profiles"]["t"]["move_allowed"] = ["agents/only-this/"]; nc.save_conf(c)
+check("move_allowed narrows what mv may take", dies(nc.cmd_mv, M("agents/taken", "agents/elsewhere")) is not None)
+nc.rclone = fake_rclone
+
 # no desktop client -> network only
 check("no local sync client -> no local roots", nc.local_roots() == [])
 

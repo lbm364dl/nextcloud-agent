@@ -1,6 +1,6 @@
 ---
 name: nextcloud
-description: Use the user's Nextcloud (any server, e.g. an institutional one) without needing a local sync copy. List, search, download, upload into allowed folders, see shares, share with users, groups or by email, and create protected links, the last three only with the user's explicit OK. Also receive shares someone sent by link. Use whenever a task needs a file "in Nextcloud" or "on the cloud drive", or sending files to a collaborator.
+description: Use the user's Nextcloud (any server, e.g. an institutional one) without needing a local sync copy. List, search, download, upload, move, rename, copy and delete within the folders the user allowed, see shares, share with users, groups or by email, and create protected links, the last three only with the user's explicit OK. Also receive shares someone sent by link. Use whenever a task needs a file "in Nextcloud" or "on the cloud drive", or sending files to a collaborator.
 ---
 
 # Nextcloud for agents
@@ -36,6 +36,9 @@ $NC find "*report*2025*" --in projects   # search names (run `index` when stale)
 $NC get projects/x/data.csv       # identical local synced copy if any, else download; prints the path
 $NC put out.csv agents/run-42/    # upload, only into allowed folders
 $NC put out.csv agents/run-42/ --overwrite   # replace a file that is already there
+$NC mv agents/old-name agents/new-name   # move or rename on the server: one request, instant
+$NC cp agents/a agents/b          # copy on the server (no download)
+$NC rm agents/run-42/tmp.csv      # delete (kept in Nextcloud's trash bin); --folder for a folder
 $NC shares                        # shared with me   (--mine: shared by me)
 $NC who "Garcia"                  # find a user's login or a group to share with
 ```
@@ -57,12 +60,20 @@ $NC who "Garcia"                  # find a user's login or a group to share with
 
 ## Hard rules
 
-1. **Never delete, move or rename anything** on the server. The script has no
-   command for it; do not work around that with raw rclone.
-2. **Write only inside `write_allowed`** (per profile, in
-   `~/.config/nextcloud-agent/config.json`; default `agents/`). Files written
-   into a folder that is shared, or covered by a public link, are visible to
-   everyone that share reaches. Tell the user if that applies.
+1. **What may change is set by the user, per profile**, in
+   `~/.config/nextcloud-agent/config.json`, as folder lists:
+   - `write_allowed` (default `agents/`): upload, `mkdir`, and where `cp`/`mv` may put things;
+   - `move_allowed`: what `mv` may take from (default: the `write_allowed` folders);
+   - `delete_allowed`: what `rm` may delete (default: the `write_allowed` folders).
+   An empty list turns that action off. Use the commands, not raw rclone, so the
+   lists apply and every change is logged. Never edit the config yourself to grant
+   more; ask the user.
+2. **Moving, renaming and deleting are normal actions inside those folders**,
+   but do them only when the task calls for them, and say what you moved or
+   deleted. Prefer `mv` over copy-then-delete (instant, no duplicate). Deleted
+   files go to Nextcloud's trash bin. Files written into a folder that is
+   shared, or covered by a public link, are visible to everyone that share
+   reaches. Tell the user if that applies.
 3. **Giving anyone new access needs the user's explicit OK for that exact
    share.** That covers `share`, `email-share` and `link`. Ask in plain words
    ("Share `reports/x.pdf` view-only with Ana García?"), and pass `--approved`
@@ -73,7 +84,7 @@ $NC who "Garcia"                  # find a user's login or a group to share with
    for that exact file (`--allow-secret`). Never echo their contents.
 5. Licensed papers and data stay private or shared with named people, never in
    links.
-6. Every write and share is logged in
+6. Every write, move, delete and share is logged in
    `~/.cache/nextcloud-agent/<profile>/actions.log`.
 
 ## Sharing levels

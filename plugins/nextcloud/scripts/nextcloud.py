@@ -18,6 +18,9 @@ private file (mode 600). Passwords are never passed on the command line.
   nextcloud.py put LOCAL PATH [--overwrite]  upload; only into allowed folders;
                                            refuses an existing file unless --overwrite
   nextcloud.py mkdir PATH                  create a folder; only in allowed folders
+  nextcloud.py mv SRC DST                  move or rename on the server (one request; nothing is copied)
+  nextcloud.py cp SRC DST                  copy on the server (no download)
+  nextcloud.py rm PATH [--folder]          delete (Nextcloud keeps it in the trash bin)
   nextcloud.py shares [--mine]             shared with me (or by me)
   nextcloud.py who NAME                    find users/groups to share with
   nextcloud.py share PATH --with LOGIN [--group] [--perm LEVEL] --approved
@@ -31,8 +34,11 @@ private file (mode 600). Passwords are never passed on the command line.
 Global: --profile NAME (or env NEXTCLOUD_PROFILE); default from the config.
 Levels: read | drop (upload only) | contribute (no delete) | edit.
 
-Rules: never deletes or moves files; writes only inside each profile's
-"write_allowed" folders; anything that gives someone new access requires
+Rules: what an agent may change is set per profile by the human, as folders:
+"write_allowed" (upload, mkdir, the target of cp/mv), "move_allowed" (what mv may
+take away from; default: the write_allowed folders) and "delete_allowed" (what rm may
+delete; default: the write_allowed folders). An empty list turns the action off.
+Anything that gives someone new access requires
 --approved, which an agent may pass only after the human approved that exact
 share; credential-looking files are not downloaded without --allow-secret.
 """
@@ -190,13 +196,26 @@ def clean(path):
     return p
 
 
-def require_writable(path):
+def _inside(p, folders):
+    return any(p == a.rstrip("/") or p.startswith(a.rstrip("/") + "/") for a in folders)
+
+
+def require_allowed(path, key, verb):
+    """PATH must lie inside one of the profile's KEY folders (write_allowed, move_allowed, delete_allowed).
+    move_allowed and delete_allowed default to write_allowed; an empty list turns the action off."""
     p = clean(path)
-    allowed = prof()["write_allowed"]
-    if not any(p == a.rstrip("/") or p.startswith(a.rstrip("/") + "/") for a in allowed):
-        die(f"writing to '{p}' is not allowed. Allowed folders: {allowed}. "
+    pr = prof()
+    allowed = pr.get(key, pr["write_allowed"])
+    if not p:
+        die(f"{verb} the root of the account is not allowed")
+    if not _inside(p, allowed):
+        die(f"{verb} '{p}' is not allowed. Folders in '{key}': {allowed}. "
             f"Ask the human to add one ({CONF_FILE}, profile '{profile_name()}').")
     return p
+
+
+def require_writable(path):
+    return require_allowed(path, "write_allowed", "writing to")
 
 
 def ocs(method, endpoint, data=None):
@@ -418,6 +437,50 @@ def cmd_mkdir(a):
     print(f"created {p}")
 
 
+def cmd_mv(a):
+    src = require_allowed(a.src, "move_allowed", "moving")
+    dst = require_writable(a.dst)
+    if src == dst or dst.startswith(src.rstrip("/") + "/"):
+        die("cannot move a folder into itself")
+    st = remote_stat(src)
+    if st is None:
+        die(f"'{src}' does not exist on the server")
+    if remote_stat(dst) is not None:
+        die(f"'{dst}' already exists; nothing was moved (move to a new name, or remove it first)")
+    rclone("moveto", f"{remote()}:{src}", f"{remote()}:{dst}")   # WebDAV MOVE: server-side, instant, no copy
+    if remote_stat(dst) is None or remote_stat(src) is not None:
+        die(f"move of '{src}' to '{dst}' could not be verified on the server")
+    log("mv", f"{src} -> {dst}")
+    print(f"moved {src} -> {dst}" + (" (folder)" if st.get("IsDir") else ""))
+
+
+def cmd_cp(a):
+    src = clean(a.src)
+    dst = require_writable(a.dst)
+    if remote_stat(src) is None:
+        die(f"'{src}' does not exist on the server")
+    if remote_stat(dst) is not None and not a.overwrite:
+        die(f"'{dst}' already exists; nothing was copied (pass --overwrite to replace it)")
+    st = remote_stat(src)
+    rclone("copy" if st.get("IsDir") else "copyto", f"{remote()}:{src}", f"{remote()}:{dst}")   # server-side COPY
+    log("cp", f"{src} -> {dst}")
+    print(f"copied {src} -> {dst}")
+
+
+def cmd_rm(a):
+    p = require_allowed(a.path, "delete_allowed", "deleting")
+    st = remote_stat(p)
+    if st is None:
+        die(f"'{p}' does not exist on the server")
+    if st.get("IsDir") and not a.folder:
+        die(f"'{p}' is a folder; pass --folder to delete it with everything in it")
+    rclone("purge" if st.get("IsDir") else "deletefile", f"{remote()}:{p}")
+    if remote_stat(p) is not None:
+        die(f"'{p}' is still on the server")
+    log("rm", p + (" (folder)" if st.get("IsDir") else ""))
+    print(f"deleted {p} (Nextcloud keeps it in the trash bin until it is emptied)")
+
+
 # -- sharing ----------------------------------------------------------------------
 
 
@@ -605,6 +668,9 @@ def main():
     x = add("put", cmd_put); x.add_argument("local"); x.add_argument("path")
     x.add_argument("--overwrite", action="store_true")
     add("mkdir", cmd_mkdir).add_argument("path")
+    x = add("mv", cmd_mv); x.add_argument("src"); x.add_argument("dst")
+    x = add("cp", cmd_cp); x.add_argument("src"); x.add_argument("dst"); x.add_argument("--overwrite", action="store_true")
+    x = add("rm", cmd_rm); x.add_argument("path"); x.add_argument("--folder", action="store_true")
     add("shares", cmd_shares).add_argument("--mine", action="store_true")
     add("who", cmd_who).add_argument("query")
     x = add("share", cmd_share); x.add_argument("path"); x.add_argument("--with", dest="who", required=True)
