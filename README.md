@@ -29,8 +29,8 @@ Several servers or accounts can be configured as separate profiles.
 
 | Allowed | Needs your explicit OK | Never |
 |---|---|---|
-| list, search, download | share with a person or group | delete, move or rename |
-| upload into `write_allowed` folders (default `agents/`) | share by email | upload outside allowed folders |
+| list, search, download | share with a person or group | write, move or delete outside the folders you allowed |
+| upload into `write_allowed` folders (default `agents/`); move, rename, copy and delete inside the folders you allowed (`move_allowed`, `delete_allowed`, both default to `write_allowed`; deletes go to the trash bin) | share by email | |
 | see what is shared with you or by you | create a link (always with a password and an expiry) | download credential-looking files (`.env`, keys, tokens) unless you ask for that exact file |
 | remove a share | | print passwords |
 
@@ -56,6 +56,6 @@ Everything an agent writes or shares is logged in `~/.cache/nextcloud-agent/<pro
 
 ## Local state (never in this repo)
 
-- `~/.config/nextcloud-agent/config.json`: profiles (server, login, allowed folders).
+- `~/.config/nextcloud-agent/config.json`: profiles (server, login, and the folders agents may write to, move from and delete in: `write_allowed`, `move_allowed`, `delete_allowed`).
 - `~/.config/nextcloud-agent/*.app-password`: app passwords, mode 600.
 - `~/.cache/nextcloud-agent/`: file index, downloads, action log.
